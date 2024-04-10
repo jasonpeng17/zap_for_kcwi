@@ -45,17 +45,21 @@ except DistributionNotFound:
     # package is not installed
     __version__ = None
 
+from IPython import embed
+
+# __all__ = ['process', 'SVDoutput', 'nancleanfits', 'contsubfits', 'Zap',
+#            'SKYSEG', '__version__']
 __all__ = ['process', 'SVDoutput', 'nancleanfits', 'contsubfits', 'Zap',
-           'SKYSEG', '__version__']
+           '__version__']
 
 # Limits of the segments in Angstroms. Zap now uses by default only one
 # segment, based on the cube wavelength's min and max.  See below for the
 # old values.
-SKYSEG = []
+# SKYSEG = []
 
 # These are the old limits from the original zap. Keeping them for reference,
 # and may be useful for further testing.
-# [0, 5400, 5850, 6440, 6750, 7200, 7700, 8265, 8602, 8731, 9275, 10000]
+SKYSEG = [0, 6440, 6750, 7200, 7700, 8265, 8602, 8731, 9275, 10000]
 
 # range where the NaD notch filters absorbs significant flux
 NOTCH_FILTER_RANGES = {
@@ -141,6 +145,9 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
         to False.
     varcurvefits : str
         Path for the optional output of the explained variance curves.
+    skyseg: list
+        Limits of the segments in Angstroms. Zap now uses by default only one segment, 
+        based on the cube wavelength's min and max.  
 
     """
     logger.info('Running ZAP %s !', __version__)
@@ -174,6 +181,7 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
         extSVD = SVDoutput(cubefits, clean=clean, zlevel=zlevel,
                            cftype=cftype, cfwidth=cfwidthSVD, mask=mask)
 
+    # zobj = Zap(cubefits, pca_class=pca_class, n_components=n_components, skyseg=skyseg)
     zobj = Zap(cubefits, pca_class=pca_class, n_components=n_components)
     zobj._run(clean=clean, zlevel=zlevel, cfwidth=cfwidthSP, cftype=cftype,
               nevals=nevals, extSVD=extSVD)
@@ -412,6 +420,7 @@ class Zap(object):
 
         # List of segmentation limits in the optical
         skyseg = np.array(SKYSEG)
+        # skyseg = np.array(skyseg)
         skyseg = skyseg[(skyseg > laxmin) & (skyseg < laxmax)]
 
         # segment limit in angstroms
@@ -616,7 +625,7 @@ class Zap(object):
 
             self.contarray = _continuumfilter(self.stack, cftype,
                                               cfwidth=cfwidth,
-                                              notch_limits=self.notch_limits)
+                                              notch_limits=self.notch_limits, pranges=self.pranges)
             self.normstack = self.stack - self.contarray
 
     def _normalize_variance(self):
@@ -933,7 +942,7 @@ def _compute_deriv(arr, nsigma=5):
     return deriv, mn1, std1
 
 
-def _continuumfilter(stack, cftype, cfwidth=300, notch_limits=None):
+def _continuumfilter(stack, cftype, cfwidth=300, notch_limits=None, pranges=None):
     if cftype == 'fit':
         x = np.arange(stack.shape[0])
 
@@ -957,7 +966,7 @@ def _continuumfilter(stack, cftype, cfwidth=300, notch_limits=None):
     else:
         raise ValueError('unknown cftype option')
 
-    logger.info('Using cfwidth=%d', cfwidth)
+    logger.info('Using cfwidth=%s', cfwidth)
 
     if notch_limits is not None:
         # To manage the notch filter which is filled with zeros, we process the
@@ -970,16 +979,35 @@ def _continuumfilter(stack, cftype, cfwidth=300, notch_limits=None):
                             cfwidth=cfwidth)
         c[notch_limits[1]:] = np.concatenate(ctmp, axis=1)
     else:
-        c = parallel_map(func, stack, NCPU, axis=1, cfwidth=cfwidth)
-        c = np.concatenate(c, axis=1)
+        # Uniform cfwidth across all segments
+        if isinstance(cfwidth, (int, float)):  
+            c = parallel_map(func, stack, NCPU, axis=1, cfwidth=cfwidth)
+            c = np.concatenate(c, axis=1)
+        # Dynamic cfwidth for different wavelength segments
+        elif isinstance(cfwidth, (list, np.ndarray)) and (len(cfwidth) == len(pranges)): 
+            results = []
+            for segment_idx, (start_px, end_px) in enumerate(pranges):
+                segment_cfwidth = cfwidth[segment_idx]
+                segment_result = parallel_map(func, stack[start_px:end_px, :], NCPU, axis=1, cfwidth=segment_cfwidth)
+                segment_result = np.concatenate(segment_result, axis=1) 
+                results.append(segment_result)  # Assuming parallel_map returns a list of results
+            # Concatenate results from all segments along the second axis
+            c = np.concatenate(results, axis=0)
+        else:
+            raise ValueError("cfwidth must be an int, float, or array matching the number of segments.")
 
     return c
 
+def _icfmedian(i, stack, cfwidth = None, **kwargs):
+    ufilt = 3  # Uniform filter size
+    # Apply median filter with dynamic cfwidth
+    return ndi.median_filter(ndi.uniform_filter(stack, (ufilt, 1)), (cfwidth, 1))
 
-def _icfmedian(i, stack, cfwidth=None):
-    ufilt = 3  # set this to help with extreme over/under corrections
-    return ndi.median_filter(
-        ndi.uniform_filter(stack, (ufilt, 1)), (cfwidth, 1))
+
+# def _icfmedian(i, stack, cfwidth=None):
+#     ufilt = 3  # set this to help with extreme over/under corrections
+#     return ndi.median_filter(
+#         ndi.uniform_filter(stack, (ufilt, 1)), (cfwidth, 1))
 
 
 def rolling_window(a, window):  # function for striding to help speed up
@@ -1000,7 +1028,13 @@ def _newheader(zobj, header=None):
                           'ZAP NaN cleaning performed for calculation')
     # Continuum Filtering
     header['ZAPcftyp'] = (zobj._cftype, 'ZAP continuum filter type')
-    header['ZAPcfwid'] = (zobj._cfwidth, 'ZAP continuum filter size')
+    # multiple cfwidth values
+    if isinstance(zobj._cfwidth, (list, np.ndarray)):
+        for i, width in enumerate(zobj._cfwidth):
+            header[f'ZAPcfwid{i}'] = (width, f'ZAP continuum filter size for segment {i}')
+    # single cfwidth value
+    else:
+        header['ZAPcfwid'] = (zobj._cfwidth, 'ZAP continuum filter size')
 
     # number of segments
     nseg = len(zobj.pranges)
