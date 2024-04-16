@@ -139,6 +139,22 @@ sky-subtracted and appear with a stronger flux in the output cube or image.
 The `zap.mask_nan_edges` function allows to mask these spectra, detecting the
 ones with too many NaNs, and replacing them with NaNs.
 
+Continuum Filter Widths and Wavelength Segments
+-----------------------------------------------
+
+The official version of Zap now uses by default only one segment, based on the cube wavelength's min and max.
+It also applies a uniform value for the continuum filter width (specified by the parameters ``cfwidthSVD`` or ``cfwidthSP``) 
+across all wavelength segments. However, this configuration may not be effective in certain scenarios, such as star-forming galaxies, 
+where some segments may exhibit extremely strong emission lines, such as H :math:\alpha, while others are dominated by sky lines. 
+The primary issue arises when a large ``cfwidth`` value (e.g., 300) is necessary to remove the continuum features in segments densely populated with sky lines. 
+This setting may fail to eliminate strong object emission lines in segments with fewer sky lines. 
+Consequently, the variances in these segments are dominated by emission lines rather than residuals from sky lines. 
+To better trace and remove these emission line features, smaller values of ``cfwidth`` (e.g., 10 - 50) are required. 
+This forked version of ZAP includes the feature of assigning different ``cfwidth`` values for different wavelength segments 
+(the ``skyseg`` parameter). The length of ``cfwidth`` should be matched with the length of ``skyseg`` if they are both ``list``
+instead of ``int`` or ``float``.
+
+
 Command Line Interface
 ======================
 

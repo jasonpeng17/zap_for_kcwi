@@ -47,11 +47,12 @@ except DistributionNotFound:
 
 from IPython import embed
 
-# __all__ = ['process', 'SVDoutput', 'nancleanfits', 'contsubfits', 'Zap',
-#            'SKYSEG', '__version__']
 __all__ = ['process', 'SVDoutput', 'nancleanfits', 'contsubfits', 'Zap',
            '__version__']
 
+# The forked version configures skyseg as an input list, 
+# thereby facilitating easier modification of the skyseg value by users.
+########################
 # Limits of the segments in Angstroms. Zap now uses by default only one
 # segment, based on the cube wavelength's min and max.  See below for the
 # old values.
@@ -59,7 +60,9 @@ __all__ = ['process', 'SVDoutput', 'nancleanfits', 'contsubfits', 'Zap',
 
 # These are the old limits from the original zap. Keeping them for reference,
 # and may be useful for further testing.
-SKYSEG = [0, 6440, 6750, 7200, 7700, 8265, 8602, 8731, 9275, 10000]
+# SKYSEG = [0, 5400, 5850, 6440, 6750, 7200, 7700, 8265, 8602, 8731, 9275, 10000]
+########################
+
 
 # range where the NaD notch filters absorbs significant flux
 NOTCH_FILTER_RANGES = {
@@ -85,7 +88,7 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
             zlevel='median', cftype='median', cfwidthSVD=300, cfwidthSP=300,
             nevals=[], extSVD=None, skycubefits=None, mask=None,
             interactive=False, ncpu=None, pca_class=None, n_components=None,
-            overwrite=False, varcurvefits=None):
+            overwrite=False, varcurvefits=None, skyseg = []):
     """ Performs the entire ZAP sky subtraction algorithm.
 
     This is the main ZAP function. It works on an input FITS file and
@@ -109,14 +112,16 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
         (default).
     cftype : {'median', 'fit', 'none'}
         Method for the continuum filter.
-    cfwidthSVD : int or float
-        Window size for the continuum filter, for the SVD computation.
-        Default to 300.
-    cfwidthSP : int or float
+    cfwidthSVD : int or float or list
+        Window size for the continuum filter, for the SVD computation. 
+        Default to 300. If it is an list, its length should match the length
+        of skyseg.
+    cfwidthSP : int or float or list
         Window size for the continuum filter used to remove the continuum
         features for calculating the eigenvalues per spectrum. Smaller values
         better trace the sources. An optimal range of is typically
-        20 - 50 pixels. Default to 300.
+        20 - 50 pixels. Default to 300. If it is an list, its length should match 
+        the length of skyseg.
     nevals : list
         Allow to specify the number of eigenspectra used for each segment.
         Provide either a single value that will be used for all of the
@@ -146,9 +151,8 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
     varcurvefits : str
         Path for the optional output of the explained variance curves.
     skyseg: list
-        Limits of the segments in Angstroms. Zap now uses by default only one segment, 
-        based on the cube wavelength's min and max.  
-
+        Limits of the segments in Angstroms. Zap now uses by default only one segment 
+        (i.e., skyseg = []), based on the cube wavelength's min and max.  
     """
     logger.info('Running ZAP %s !', __version__)
     t0 = time()
@@ -179,10 +183,9 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
         # will be computed in the _run method, which allows to avoid running
         # twice the zlevel and continuumfilter steps.
         extSVD = SVDoutput(cubefits, clean=clean, zlevel=zlevel,
-                           cftype=cftype, cfwidth=cfwidthSVD, mask=mask)
+                           cftype=cftype, cfwidth=cfwidthSVD, mask=mask, skyseg=skyseg)
 
-    # zobj = Zap(cubefits, pca_class=pca_class, n_components=n_components, skyseg=skyseg)
-    zobj = Zap(cubefits, pca_class=pca_class, n_components=n_components)
+    zobj = Zap(cubefits, pca_class=pca_class, n_components=n_components, skyseg=skyseg)
     zobj._run(clean=clean, zlevel=zlevel, cfwidth=cfwidthSP, cftype=cftype,
               nevals=nevals, extSVD=extSVD)
 
@@ -202,7 +205,7 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
 
 def SVDoutput(cubefits, clean=True, zlevel='median', cftype='median',
               cfwidth=300, mask=None, ncpu=None, pca_class=None,
-              n_components=None):
+              n_components=None, skyseg = []):
     """Performs the SVD decomposition of a datacube.
 
     This allows to use the SVD for a different datacube. It used to allow to
@@ -222,11 +225,14 @@ def SVDoutput(cubefits, clean=True, zlevel='median', cftype='median',
         (default).
     cftype : {'median', 'fit', 'none'}
         Method for the continuum filter.
-    cfwidth : int or float
+    cfwidth : int or float or list
         Window size for the continuum filter, default to 300.
+        If it is an list, its length should match the length of skyseg.
     mask : str
         Path of a FITS file containing a mask (1 for objects, 0 for sky).
-
+    skyseg: list
+        Limits of the segments in Angstroms. Zap now uses by default only one segment 
+        (i.e., skyseg = []), based on the cube wavelength's min and max.  
     """
     logger.info('Processing %s to compute the SVD', cubefits)
 
@@ -234,7 +240,7 @@ def SVDoutput(cubefits, clean=True, zlevel='median', cftype='median',
         global NCPU
         NCPU = ncpu
 
-    zobj = Zap(cubefits, pca_class=pca_class, n_components=n_components)
+    zobj = Zap(cubefits, pca_class=pca_class, n_components=n_components, skyseg=skyseg)
     zobj._prepare(clean=clean, zlevel=zlevel, cftype=cftype,
                   cfwidth=cfwidth, mask=mask)
     zobj._msvd()
@@ -344,10 +350,12 @@ class Zap(object):
         deconstructed stack
     zlsky : numpy.ndarray
         A 1d array containing the result of the zero level subtraction
-
+    skyseg: list
+        Limits of the segments in Angstroms. Zap now uses by default only one segment 
+        (i.e., skyseg = []), based on the cube wavelength's min and max.   
     """
 
-    def __init__(self, cubefits, pca_class=None, n_components=None):
+    def __init__(self, cubefits, pca_class=None, n_components=None, skyseg=[]):
         self.cubefits = cubefits
         self.ins_mode = None
 
@@ -419,13 +427,12 @@ class Zap(object):
         laxmax = max(self.laxis)
 
         # List of segmentation limits in the optical
-        skyseg = np.array(SKYSEG)
-        # skyseg = np.array(skyseg)
-        skyseg = skyseg[(skyseg > laxmin) & (skyseg < laxmax)]
+        self.skyseg = np.array(skyseg) if isinstance(skyseg, list) else skyseg # check if skyseg is of type list before assigning
+        self.skyseg = self.skyseg[(self.skyseg > laxmin) & (self.skyseg < laxmax)]
 
         # segment limit in angstroms
-        self.lranges = (np.vstack([np.append(laxmin - 10, skyseg),
-                                   np.append(skyseg, laxmax + 10)])).T
+        self.lranges = (np.vstack([np.append(laxmin - 10, self.skyseg),
+                                   np.append(self.skyseg, laxmax + 10)])).T
 
         # segment limit in pixels
         laxis = self.laxis
@@ -813,7 +820,14 @@ class Zap(object):
     def writevarcurve(self, varcurvefits='VARCURVE_ZAP.fits', overwrite=False):
         """Write the explained variance curves to an individual fits file."""
         from astropy.table import Table
-        table = Table([m.explained_variance_ for m in self.models])
+        # determine the maximum length of the arrays
+        max_length = max(len(m.explained_variance_) for m in self.models)
+        # pad shorter arrays to match the maximum length
+        # ensures that all arrays are extended with NaN values to match the longest array among them, 
+        # allowing them to be combined into a single table without errors due to differing lengths. 
+        padded_variances = [np.pad(m.explained_variance_, (0, max_length - len(m.explained_variance_)), 
+                            'constant', constant_values=np.nan) for m in self.models]
+        table = Table([padded_variances])
         hdu = fits.table_to_hdu(table)
         _newheader(self, hdu.header)
         hdu.writeto(varcurvefits, overwrite=overwrite)
@@ -987,11 +1001,13 @@ def _continuumfilter(stack, cftype, cfwidth=300, notch_limits=None, pranges=None
         elif isinstance(cfwidth, (list, np.ndarray)) and (len(cfwidth) == len(pranges)): 
             results = []
             for segment_idx, (start_px, end_px) in enumerate(pranges):
+                # segment the input array based on pranges 
+                # each segment has an unique cfwidth value 
                 segment_cfwidth = cfwidth[segment_idx]
                 segment_result = parallel_map(func, stack[start_px:end_px, :], NCPU, axis=1, cfwidth=segment_cfwidth)
                 segment_result = np.concatenate(segment_result, axis=1) 
-                results.append(segment_result)  # Assuming parallel_map returns a list of results
-            # Concatenate results from all segments along the second axis
+                results.append(segment_result)  
+            # Concatenate results from all segments along the first axis
             c = np.concatenate(results, axis=0)
         else:
             raise ValueError("cfwidth must be an int, float, or array matching the number of segments.")
@@ -1002,12 +1018,6 @@ def _icfmedian(i, stack, cfwidth = None, **kwargs):
     ufilt = 3  # Uniform filter size
     # Apply median filter with dynamic cfwidth
     return ndi.median_filter(ndi.uniform_filter(stack, (ufilt, 1)), (cfwidth, 1))
-
-
-# def _icfmedian(i, stack, cfwidth=None):
-#     ufilt = 3  # set this to help with extreme over/under corrections
-#     return ndi.median_filter(
-#         ndi.uniform_filter(stack, (ufilt, 1)), (cfwidth, 1))
 
 
 def rolling_window(a, window):  # function for striding to help speed up
@@ -1031,10 +1041,10 @@ def _newheader(zobj, header=None):
     # multiple cfwidth values
     if isinstance(zobj._cfwidth, (list, np.ndarray)):
         for i, width in enumerate(zobj._cfwidth):
-            header[f'ZAPcfwid{i}'] = (width, f'ZAP continuum filter size for segment {i}')
+            header[f'ZAPcfwd{i}'] = (width, f'ZAP continuum filter size for segment {i}')
     # single cfwidth value
     else:
-        header['ZAPcfwid'] = (zobj._cfwidth, 'ZAP continuum filter size')
+        header['ZAPcfwd'] = (zobj._cfwidth, 'ZAP continuum filter size')
 
     # number of segments
     nseg = len(zobj.pranges)
