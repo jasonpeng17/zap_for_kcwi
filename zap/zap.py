@@ -32,6 +32,7 @@ import warnings
 
 from astropy.io import fits
 from astropy.wcs import WCS
+from astropy.stats import sigma_clip
 from functools import wraps
 from multiprocessing import cpu_count, Manager, Process
 from scipy.stats import sigmaclip
@@ -84,11 +85,11 @@ logger = logging.getLogger(__name__)
 
 # ================= Top Level Functions =================
 
-def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
+def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True, clean_zeros=False,
             zlevel='median', cftype='median', cfwidthSVD=300, cfwidthSP=300,
-            nevals=[], extSVD=None, skycubefits=None, mask=None,
-            interactive=False, ncpu=None, pca_class=None, n_components=None,
-            overwrite=False, varcurvefits=None, skyseg = []):
+            nevals=[], extSVD=None, skycubefits=None, mask=None, interactive=False, 
+            ncpu=None, pca_class=None, n_components=None, overwrite=False, 
+            varcurvefits=None, skyseg=[], nsigclip_sky=3, sigclip_mask=None):
     """ Performs the entire ZAP sky subtraction algorithm.
 
     This is the main ZAP function. It works on an input FITS file and
@@ -107,6 +108,8 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
         interpolation from the neighbors. The NaN values are reinserted into
         the final datacube. If set to False, any spaxel with a NaN value will
         be ignored.
+    clean_zeros : bool
+        If True, spaxels with more then 25% of zero values are replaced with NaN values.
     zlevel : str
         Method for the zeroth order sky removal: `none`, `sigclip` or `median`
         (default).
@@ -153,6 +156,12 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
     skyseg: list
         Limits of the segments in Angstroms. Zap now uses by default only one segment 
         (i.e., skyseg = []), based on the cube wavelength's min and max.  
+    nsigclip_sky: float
+        Sigma-clipping the sky spaxels that are n-sigma away from the median at 
+        each wavelength. If nsigclip_sky equals to 0, then skip this sigma-clipping step.
+    sigclip_mask : str
+        A 2D fits image to indicate the spaxels (> 0) that require the sigma-clipping step for 
+        the generated sky spaxels. Other spaxels should equal to 0. Default to None.
     """
     logger.info('Running ZAP %s !', __version__)
     t0 = time()
@@ -182,12 +191,12 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
         # cfwidth values differ and extSVD is not given. Otherwise, the SVD
         # will be computed in the _run method, which allows to avoid running
         # twice the zlevel and continuumfilter steps.
-        extSVD = SVDoutput(cubefits, clean=clean, zlevel=zlevel,
+        extSVD = SVDoutput(cubefits, clean=clean, clean_zeros=clean_zeros, zlevel=zlevel,
                            cftype=cftype, cfwidth=cfwidthSVD, mask=mask, skyseg=skyseg)
 
     zobj = Zap(cubefits, pca_class=pca_class, n_components=n_components, skyseg=skyseg)
-    zobj._run(clean=clean, zlevel=zlevel, cfwidth=cfwidthSP, cftype=cftype,
-              nevals=nevals, extSVD=extSVD)
+    zobj._run(clean=clean, clean_zeros=clean_zeros, zlevel=zlevel, cfwidth=cfwidthSP, cftype=cftype,
+              nevals=nevals, extSVD=extSVD, nsigclip_sky=nsigclip_sky, sigclip_mask=sigclip_mask)
 
     if interactive:
         # Return the zobj object without saving files
@@ -203,9 +212,9 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True,
     logger.info('Zapped! (took %.2f sec.)', time() - t0)
 
 
-def SVDoutput(cubefits, clean=True, zlevel='median', cftype='median',
+def SVDoutput(cubefits, clean=True, clean_zeros=False, zlevel='median', cftype='median',
               cfwidth=300, mask=None, ncpu=None, pca_class=None,
-              n_components=None, skyseg = []):
+              n_components=None, skyseg=[]):
     """Performs the SVD decomposition of a datacube.
 
     This allows to use the SVD for a different datacube. It used to allow to
@@ -220,6 +229,8 @@ def SVDoutput(cubefits, clean=True, zlevel='median', cftype='median',
         If True (default value), the NaN values are cleaned. Spaxels with more
         then 25% of NaN values are removed, the others are replaced with an
         interpolation from the neighbors.
+    clean_zeros : bool
+        If True, spaxels with more then 25% of zero values are replaced with NaN values.
     zlevel : str
         Method for the zeroth order sky removal: `none`, `sigclip` or `median`
         (default).
@@ -241,14 +252,14 @@ def SVDoutput(cubefits, clean=True, zlevel='median', cftype='median',
         NCPU = ncpu
 
     zobj = Zap(cubefits, pca_class=pca_class, n_components=n_components, skyseg=skyseg)
-    zobj._prepare(clean=clean, zlevel=zlevel, cftype=cftype,
+    zobj._prepare(clean=clean, clean_zeros=clean_zeros, zlevel=zlevel, cftype=cftype,
                   cfwidth=cfwidth, mask=mask)
     zobj._msvd()
     return zobj
 
 
 def contsubfits(cubefits, outfits='CONTSUB_CUBE.fits', ncpu=None,
-                cftype='median', cfwidth=300, clean_nan=True, zlevel='median',
+                cftype='median', cfwidth=300, clean_nan=True, clean_zeros=False, zlevel='median',
                 overwrite=False):
     """A standalone implementation of the continuum removal."""
     if ncpu is not None:
@@ -256,7 +267,7 @@ def contsubfits(cubefits, outfits='CONTSUB_CUBE.fits', ncpu=None,
         NCPU = ncpu
 
     zobj = Zap(cubefits)
-    zobj._prepare(clean=clean_nan, zlevel=zlevel, cftype=cftype,
+    zobj._prepare(clean=clean_nan, clean_zeros=clean_zeros, zlevel=zlevel, cftype=cftype,
                   cfwidth=cfwidth)
     cube = zobj.make_contcube()
 
@@ -374,6 +385,9 @@ class Zap(object):
             else:
                 raise ValueError('unsupported instrument %s' % self.instrument)
 
+        # Get a copy of the original cube
+        self.cube_copy = self.cube.copy()
+
         # Workaround for floating points errors in wcs computation: if cunit is
         # specified, wcslib will convert in meters instead of angstroms, so we
         # remove cunit before creating the wcs object
@@ -399,8 +413,9 @@ class Zap(object):
         else:
             self.notch_limits = None
 
-        # NaN Cleaning
+        # NaN & Zero Cleaning
         self.run_clean = False
+        self.run_zero_clean = False
         self.nancube = None
         self._boxsz = 1
         self._rejectratio = 0.25
@@ -456,11 +471,15 @@ class Zap(object):
         self.cleancube = None
 
     @timeit
-    def _prepare(self, clean=True, zlevel='median', cftype='median',
+    def _prepare(self, clean=True, clean_zeros=False, zlevel='median', cftype='median',
                  cfwidth=300, extzlevel=None, mask=None):
         # clean up the nan values
         if clean:
             self._nanclean()
+
+        # clean up the zero values 
+        if (mask is None) and clean_zeros:
+            self._zeroclean()
 
         # if mask is supplied, apply it
         if mask is not None:
@@ -482,8 +501,8 @@ class Zap(object):
         # normalize the variance in the segments.
         self._normalize_variance()
 
-    def _run(self, clean=True, zlevel='median', cftype='median',
-             cfwidth=300, nevals=[], extSVD=None):
+    def _run(self, clean=True, clean_zeros=False, zlevel='median', cftype='median',
+             cfwidth=300, nevals=[], extSVD=None, nsigclip_sky=3, sigclip_mask=None):
         """ Perform all steps to ZAP a datacube:
 
         - NaN re/masking,
@@ -495,9 +514,10 @@ class Zap(object):
         - eigenvector selection,
         - residual reconstruction and subtraction,
         - data cube reconstruction.
+        - sigma-clipping the skycube.
 
         """
-        self._prepare(clean=clean, zlevel=zlevel, cftype=cftype,
+        self._prepare(clean=clean, clean_zeros=clean_zeros, zlevel=zlevel, cftype=cftype,
                       cfwidth=cfwidth, extzlevel=extSVD)
 
         # do the multiprocessed SVD calculation
@@ -521,6 +541,23 @@ class Zap(object):
 
         # stuff the new spectra back into the cube
         self.remold()
+
+        # sigma-clipping the skycube and update the clean_cube correspondingly
+        if nsigclip_sky > 0:
+            self.sigclip_mask = sigclip_mask
+            self.sigclip_sky(nsig=nsigclip_sky)
+        elif nsigclip_sky < 0:
+            raise ValueError('Invalid nsigclip_sky value, must be larger than 0')
+        elif nsigclip_sky == 0:
+            logger.info('Skip sigma-clipping the skycube')
+
+    def _zeroclean(self):
+        """
+        Detects zero values in cube and replace them with nan values. The positions in
+        the cube are retained in zerocube for later remasking.
+        """
+        self.cube, self.y_zeros, self.x_zeros = _zeroclean(self.cube, rejectratio=self._rejectratio)
+        self.run_zero_clean = True
 
     def _nanclean(self):
         """
@@ -728,10 +765,22 @@ class Zap(object):
         # self.recon = np.concatenate([x.T for x in Xinv])
         # self.recon *= self.variancearray[:, np.newaxis]
 
-    def make_cube_from_stack(self, stack, with_nans=False):
+    def make_cube_from_stack(self, stack, with_nans=False, with_zeros=False):
         """Stuff the stack back into a cube."""
         cube = self.cube.copy()
         cube[:, self.y, self.x] = stack
+
+        if with_zeros:
+            self.cube[:, self.y_zeros, self.x_zeros] = 0.
+            cube[:, self.y_zeros, self.x_zeros] = 0.
+
+        # for wavelength regions that are masked, 
+        # fill them with the original cube values
+        if len(self.lmsk_wlaxis) != 0:
+            for wlaxis_i in self.lmsk_wlaxis:
+                lmin_i, lmax_i = wlaxis_i
+                cube[lmin_i:lmax_i + 1] = self.cube_copy[lmin_i:lmax_i + 1]
+
         if with_nans:
             cube[self.nancube] = np.nan
         if self.ins_mode in NOTCH_FILTER_RANGES:
@@ -745,15 +794,44 @@ class Zap(object):
         """
         logger.info('Applying correction and reshaping data product')
         self.cleancube = self.make_cube_from_stack(self.stack - self.recon,
-                                                   with_nans=self.run_clean)
+                                                   with_nans=self.run_clean,
+                                                   with_zeros=self.run_zero_clean)
 
-    def reprocess(self, nevals=[]):
-        """ A method that redoes the eigenvalue selection, reconstruction, and
-        remolding of the data.
+    @timeit
+    def sigclip_sky(self, nsig=3):
+        """sigma-clipping the skycube; at a certain wavelength, replace sky pixels that are 
+        n-sigma array from the median with the median. Update the cleaned cube correspondingly.
+        """
+        logger.info('Sigma-clipping the sky cube')
+        skycube0 = self.cube - self.cleancube
+        skycube = skycube0.copy()
+
+        # define the spaxels that are used to compute the median (exclude edge spaxels with 0 values)
+        use = (skycube != 0)
+        skycube[~use] = np.nan
+
+        # calculate the median sky value at each wavelength
+        skycube_clipped = sigma_clip(skycube, sigma = nsig, axis = (1,2))
+        median_sky = np.ma.median(skycube_clipped, axis = (1,2)).data
+        # assign the median sky value to the n-sigma outliers at each wavelength
+        median_cube = median_sky[:, np.newaxis, np.newaxis] * np.ones((1, np.shape(skycube)[1], np.shape(skycube)[2]))
+        if self.sigclip_mask is not None: # only applies the median values to certain spaxels defined by sigclip_mask
+            sigclip_mask = fits.getdata(self.sigclip_mask).astype(bool) 
+            skycube[(skycube_clipped.mask & sigclip_mask)] = median_cube[(skycube_clipped.mask & sigclip_mask)]
+        else:
+            skycube[skycube_clipped.mask] = median_cube[skycube_clipped.mask]
+        skycube[~use] = skycube0[~use]
+        # update the cleaned cube correspondingly
+        self.cleancube = self.cube - skycube
+
+    def reprocess(self, nevals=[], nsigclip_sky=3):
+        """ A method that redoes the eigenvalue selection, reconstruction, 
+        remolding, and re-sigma-clipping the skycube of the data.
         """
         self.chooseevals(nevals=nevals)
         self.reconstruct()
         self.remold()
+        self.sigclip_sky(nsig=nsigclip_sky)
 
     def optimize(self):
         """Compute the optimal number of components needed to characterize
@@ -1072,6 +1150,28 @@ def _isigclip(i, istack):
 
 def _imedian(i, istack):
     return np.median(istack, axis=1)
+
+
+@timeit
+def _zeroclean(cube, rejectratio=0.25):
+    """
+    Detects zero values in cube and replace them with nan values. The positions in
+    the cube are retained for later remasking.
+    """
+    logger.info('Cleaning zero spaxels in the cube')
+    cleancube = cube.copy()
+    zeros = (cleancube == 0) # find all-zero spaxels
+    zeromap = zeros.sum(axis=0)  # map of total zeros in a spaxel
+
+    # choose some maximum number of zero pixels in the spaxel and extract positions
+    zeromask = zeromap > (rejectratio * cleancube.shape[0])
+    y_zeros, x_zeros = np.where(zeromask) 
+    logger.info('Replaced %d spaxels with more than %.1f%% zero pixels with NaN values',
+                np.count_nonzero(zeromask), rejectratio * 100)
+
+    # replace those spaxels with nan values 
+    cleancube[:, y_zeros, x_zeros] = np.nan
+    return cleancube, y_zeros, x_zeros
 
 
 @timeit
