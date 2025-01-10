@@ -89,7 +89,7 @@ def process(cubefits, outcubefits='DATACUBE_ZAP.fits', clean=True, clean_zeros=F
             zlevel='median', cftype='median', cfwidthSVD=300, cfwidthSP=300,
             nevals=[], extSVD=None, skycubefits=None, mask=None, interactive=False, 
             ncpu=None, pca_class=None, n_components=None, overwrite=False, 
-            varcurvefits=None, skyseg=[], nsigclip_sky=3, sigclip_mask=None):
+            varcurvefits=None, skyseg=[], nsigclip_sky=0, sigclip_mask=None):
     """ Performs the entire ZAP sky subtraction algorithm.
 
     This is the main ZAP function. It works on an input FITS file and
@@ -502,7 +502,7 @@ class Zap(object):
         self._normalize_variance()
 
     def _run(self, clean=True, clean_zeros=False, zlevel='median', cftype='median',
-             cfwidth=300, nevals=[], extSVD=None, nsigclip_sky=3, sigclip_mask=None):
+             cfwidth=300, nevals=[], extSVD=None, nsigclip_sky=0, sigclip_mask=None):
         """ Perform all steps to ZAP a datacube:
 
         - NaN re/masking,
@@ -774,13 +774,6 @@ class Zap(object):
             self.cube[:, self.y_zeros, self.x_zeros] = 0.
             cube[:, self.y_zeros, self.x_zeros] = 0.
 
-        # for wavelength regions that are masked, 
-        # fill them with the original cube values
-        if len(self.lmsk_wlaxis) != 0:
-            for wlaxis_i in self.lmsk_wlaxis:
-                lmin_i, lmax_i = wlaxis_i
-                cube[lmin_i:lmax_i + 1] = self.cube_copy[lmin_i:lmax_i + 1]
-
         if with_nans:
             cube[self.nancube] = np.nan
         if self.ins_mode in NOTCH_FILTER_RANGES:
@@ -824,7 +817,7 @@ class Zap(object):
         # update the cleaned cube correspondingly
         self.cleancube = self.cube - skycube
 
-    def reprocess(self, nevals=[], nsigclip_sky=3):
+    def reprocess(self, nevals=[], nsigclip_sky=0):
         """ A method that redoes the eigenvalue selection, reconstruction, 
         remolding, and re-sigma-clipping the skycube of the data.
         """
